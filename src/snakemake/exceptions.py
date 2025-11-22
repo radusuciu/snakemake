@@ -9,6 +9,21 @@ from tokenize import TokenError
 from snakemake_interface_common.exceptions import WorkflowError, ApiError
 from snakemake_interface_logger_plugins.common import LogEvent
 
+# Module-level variable to store the exit code from the last failed job.
+# This is used when --propagate-exit-codes is enabled to propagate the actual
+# shell exit code to the CLI layer.
+#
+# Design rationale: Snakemake's architecture has deep call stacks where shell
+# commands execute (shell.py -> jobs -> executors -> API -> CLI). When a shell
+# command fails, the CalledProcessError with the exit code is caught and converted
+# to various exception types, and eventually the API returns False instead of raising.
+# This module-level variable provides a communication channel to tunnel the exit code
+# from the shell execution layer back to main().
+#
+# Thread safety: This is safe because Snakemake only runs one workflow execution
+# per process. It's reset at the start of each run via clear_last_failed_job_exit_code().
+_last_failed_job_exit_code = None
+
 
 def format_error(
     ex, lineno, linemaps=None, snakefile=None, show_traceback=False, rule=None
@@ -164,6 +179,68 @@ def print_exception_warning(ex, linemaps=None, footer_message=""):
 
     log_verbose_traceback(ex)
     logger.warning(f"{format_exception_to_string(ex, linemaps)}\n{footer_message}")
+
+
+def set_last_failed_job_exit_code(exit_code):
+    """
+    Store the exit code from the last failed job.
+    Used when --propagate-exit-codes is enabled.
+    """
+    global _last_failed_job_exit_code
+    if _last_failed_job_exit_code is None:  # Only store the first failure
+        _last_failed_job_exit_code = exit_code
+
+
+def get_last_failed_job_exit_code():
+    """
+    Retrieve the exit code from the last failed job.
+    Returns None if no exit code was stored.
+    """
+    global _last_failed_job_exit_code
+    return _last_failed_job_exit_code
+
+
+def clear_last_failed_job_exit_code():
+    """Reset the stored exit code."""
+    global _last_failed_job_exit_code
+    _last_failed_job_exit_code = None
+
+
+def get_exit_code_from_exception(ex):
+    """
+    Extract exit code from an exception chain.
+
+    Traverses the exception chain looking for exceptions that contain
+    exit code information (SpawnedJobError, CalledProcessError).
+    Returns the first exit code found, or None if no exit code is found.
+    """
+    import subprocess
+
+    # Check the current exception
+    if isinstance(ex, SpawnedJobError) and ex.exit_code is not None:
+        return ex.exit_code
+    if isinstance(ex, subprocess.CalledProcessError):
+        return ex.returncode
+
+    # Check the __cause__ chain
+    cause = ex.__cause__
+    while cause is not None:
+        if isinstance(cause, SpawnedJobError) and cause.exit_code is not None:
+            return cause.exit_code
+        if isinstance(cause, subprocess.CalledProcessError):
+            return cause.returncode
+        cause = cause.__cause__
+
+    # Check the __context__ chain
+    context = ex.__context__
+    while context is not None:
+        if isinstance(context, SpawnedJobError) and context.exit_code is not None:
+            return context.exit_code
+        if isinstance(context, subprocess.CalledProcessError):
+            return context.returncode
+        context = context.__context__
+
+    return None
 
 
 def print_exception(ex, linemaps=None):
@@ -540,7 +617,9 @@ class CreateCondaEnvironmentException(WorkflowError):
 
 
 class SpawnedJobError(Exception):
-    pass
+    def __init__(self, exit_code=None):
+        self.exit_code = exit_code
+        super().__init__()
 
 
 class CheckSumMismatchException(WorkflowError):

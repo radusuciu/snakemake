@@ -355,6 +355,9 @@ class shell:
                     pass
 
         if retcode:
+            # Store the exit code globally so it can be propagated to main() if --propagate-exit-codes is set
+            from snakemake.exceptions import set_last_failed_job_exit_code
+            set_last_failed_job_exit_code(retcode)
             raise sp.CalledProcessError(retcode, cmd)
         return ret
 
@@ -366,6 +369,9 @@ class shell:
         if tmpdir:
             shutil.rmtree(tmpdir)
         if retcode:
+            # Store the exit code globally so it can be propagated to main() if --propagate-exit-codes is set
+            from snakemake.exceptions import set_last_failed_job_exit_code
+            set_last_failed_job_exit_code(retcode)
             raise sp.CalledProcessError(retcode, cmd)
 
 

@@ -230,8 +230,11 @@ class Executor(RealExecutor):
 
         try:
             subprocess.check_call(cmd, shell=True)
-        except subprocess.CalledProcessError:
-            raise SpawnedJobError()
+        except subprocess.CalledProcessError as e:
+            # Store the exit code so it can be propagated to main() if --propagate-exit-codes is set
+            from snakemake.exceptions import set_last_failed_job_exit_code
+            set_last_failed_job_exit_code(e.returncode)
+            raise SpawnedJobError(exit_code=e.returncode)
 
     def cached_or_run(self, job: SingleJobExecutorInterface, run_func, *args):
         """

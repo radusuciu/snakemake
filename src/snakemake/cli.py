@@ -851,6 +851,16 @@ def get_argument_parser(profiles=None):
         help=("Re-run all jobs the output of which is recognized as incomplete."),
     )
     group_exec.add_argument(
+        "--propagate-exit-codes",
+        action="store_true",
+        help=(
+            "When a job fails, propagate its exit code instead of always returning 1. "
+            "This allows external workflow orchestrators (e.g., AWS Batch, Kubernetes) "
+            "to implement retry strategies based on specific exit codes. "
+            "If multiple jobs fail, the exit code of the first failed job is used."
+        ),
+    )
+    group_exec.add_argument(
         "--shadow-prefix",
         metavar="DIR",
         help=(
@@ -2007,6 +2017,10 @@ def args_to_api(args, parser):
 
     wait_for_files = parse_wait_for_files(args)
     output_settings = create_output_settings(args, log_handler_settings)
+    # Reset the exit code tracker at the start of each run
+    from snakemake.exceptions import clear_last_failed_job_exit_code
+    clear_last_failed_job_exit_code()
+
     with SnakemakeApi(output_settings) as snakemake_api:
         deployment_method = args.software_deployment_method
         if args.use_conda:
@@ -2277,5 +2291,20 @@ def main(argv=None):
         success = args_to_api(args, parser)
     except Exception as e:
         print_exception(e)
+        # Check if we should propagate exit codes
+        if hasattr(args, "propagate_exit_codes") and args.propagate_exit_codes:
+            from snakemake.exceptions import get_exit_code_from_exception
+
+            exit_code = get_exit_code_from_exception(e)
+            if exit_code is not None:
+                sys.exit(exit_code)
         sys.exit(1)
+
+    # Handle failure case (success=False) - check if we should propagate exit codes
+    if not success and hasattr(args, "propagate_exit_codes") and args.propagate_exit_codes:
+        from snakemake.exceptions import get_last_failed_job_exit_code
+        exit_code = get_last_failed_job_exit_code()
+        if exit_code is not None:
+            sys.exit(exit_code)
+
     sys.exit(0 if success else 1)
